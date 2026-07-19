@@ -67,6 +67,7 @@
 #define DRV_NAME		"i2c_asus_ec"
 
 #define EC_I2C_BUS_NAME		"b94000.i2c"
+#define EC_I2C_BUS_ADDR		0xb94000
 #define EC_I2C_ADDR		0x5b
 #define FAN_I2C_ADDR		0x76
 
@@ -108,6 +109,7 @@
 
 /* Fan mode encoding observed in (0x01, 0x02). */
 #define EC_FAN_MODE_AUTO	0
+#define EC_FAN_MODE_SUSPEND	1
 #define EC_FAN_MODE_MANUAL	2
 
 /* Fan-controller (0x76) opcodes (mirrors x1e-ec-tool/tool.py) */
@@ -1394,7 +1396,6 @@ static void asus_ec_remove(struct platform_device *pdev)
 /* PM                                                                 */
 /* ------------------------------------------------------------------ */
 
-// FIXME: adapt to Vivobook S 15
 static int __maybe_unused asus_ec_suspend(struct device *dev)
 {
 	struct asus_ec *ec = dev_get_drvdata(dev);
@@ -1403,7 +1404,7 @@ static int __maybe_unused asus_ec_suspend(struct device *dev)
 	mutex_lock(&ec->mode_lock);
 
 	if (is_vivobook_s15(ec))
-		fan_set_suspend(ec, EC_FAN_MODE_AUTO);
+		fan_set_suspend(ec, EC_FAN_MODE_SUSPEND);
 	else {
 		/*
 		 * Force fan off during suspend: switch to manual mode and set
@@ -1440,7 +1441,11 @@ static int __maybe_unused asus_ec_resume(struct device *dev)
 	 */
 	switch (ec->pp_active) {
 	case PLATFORM_PROFILE_QUIET:
-		ret = asus_ec_set_fan_mode(ec, EC_FAN_MODE_MANUAL);
+		if (is_vivobook_s15(ec))
+			ret = fan_set_suspend(ec, EC_FAN_MODE_MANUAL);
+		else
+			ret = asus_ec_set_fan_mode(ec, EC_FAN_MODE_MANUAL);
+
 		if (!ret)
 			ret = asus_ec_set_pwm_both(ec, PP_QUIET_PWM);
 		if (ret)
@@ -1449,7 +1454,11 @@ static int __maybe_unused asus_ec_resume(struct device *dev)
 		break;
 
 	case PLATFORM_PROFILE_PERFORMANCE:
-		ret = asus_ec_set_fan_mode(ec, EC_FAN_MODE_MANUAL);
+		if (is_vivobook_s15(ec))
+			ret = fan_set_suspend(ec, EC_FAN_MODE_MANUAL);
+		else
+			ret = asus_ec_set_fan_mode(ec, EC_FAN_MODE_MANUAL);
+
 		if (!ret)
 			ret = asus_ec_set_pwm_both(ec, PP_PERF_PWM);
 		if (ret)
@@ -1459,7 +1468,11 @@ static int __maybe_unused asus_ec_resume(struct device *dev)
 
 	default:
 		/* balanced / unknown → auto */
-		ret = asus_ec_set_fan_mode(ec, EC_FAN_MODE_AUTO);
+		if (is_vivobook_s15(ec))
+			ret = fan_set_suspend(ec, EC_FAN_MODE_AUTO);
+		else
+			ret = asus_ec_set_fan_mode(ec, EC_FAN_MODE_AUTO);
+
 		if (ret)
 			dev_warn(dev, "resume: restore auto failed: %d\n", ret);
 		ec->manual_active = false;
@@ -1473,10 +1486,18 @@ static int __maybe_unused asus_ec_resume(struct device *dev)
 
 static SIMPLE_DEV_PM_OPS(asus_ec_pm_ops, asus_ec_suspend, asus_ec_resume);
 
+static const struct of_device_id asus_geni_match[] = {
+    { .compatible = "qcom,geni-i2c" },
+    { }
+};
+
+MODULE_DEVICE_TABLE(of, asus_geni_match);
+
 static struct platform_driver asus_ec_driver = {
 	.driver	= {
 		.name	= DRV_NAME,
 		.pm	= &asus_ec_pm_ops,
+		.of_match_table = asus_geni_match,
 	},
 	.probe	= asus_ec_probe,
 	.remove	= asus_ec_remove,
@@ -1513,6 +1534,8 @@ static void __exit asus_ec_exit(void)
 
 module_init(asus_ec_init);
 module_exit(asus_ec_exit);
+
+
 
 MODULE_AUTHOR("Sombre-Osmoze <sombre@osmoze.xyz>");
 MODULE_DESCRIPTION("ASUS Zenbook A14 (UX3407RA) Embedded Controller driver (PoC)");
