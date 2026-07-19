@@ -3,7 +3,7 @@
 # Out-of-tree build for the ASUS Zenbook A14 EC PoC driver.
 #
 # Usage:
-#   make            # build asus_zenbook_a14_ec.ko against running kernel
+#   make            # build i2c_asus_ec.ko against running kernel
 #   make clean      # remove build artefacts
 #   make load       # insmod the module (requires sudo)
 #   make unload     # rmmod the module (requires sudo)
@@ -13,7 +13,8 @@
 #   make KDIR=/path/to/linux
 #
 
-KDIR ?= /lib/modules/$(shell uname -r)/build
+KERNELRELEASE ?= $(shell uname -r)
+KDIR ?= /lib/modules/$(KERNELRELEASE)/build
 PWD  := $(shell pwd)
 
 all:
@@ -23,16 +24,16 @@ clean:
 	$(MAKE) -C $(KDIR) M=$(PWD) clean
 
 load:
-	sudo insmod ./asus_zenbook_a14_ec.ko
+	sudo insmod ./i2c_asus_ec.ko
 
 unload:
-	sudo rmmod asus_zenbook_a14_ec
+	sudo rmmod i2c_asus_ec
 
 reload:
-	-sudo rmmod asus_zenbook_a14_ec
-	sudo insmod ./asus_zenbook_a14_ec.ko
+	-sudo rmmod i2c_asus_ec
+	sudo insmod ./i2c_asus_ec.ko
 
 dmesg:
-	dmesg --ctime | grep -E 'asus_zenbook_a14_ec|asus.ec' | tail -n 40
+	dmesg --ctime | grep -E 'i2c_asus_ec|asus.ec' | tail -n 40
 
 .PHONY: all clean load unload reload dmesg

@@ -20,7 +20,8 @@
 #include <linux/pm.h>
 
 #define ASUS_VENDOR_ID		0x0B05
-#define ASUS_PRODUCT_ID		0x0220
+#define ASUS_PRODUCT_ID_A14		0x0220
+#define ASUS_PRODUCT_ID_S15		0x4543
 
 #define A14_EC_REPORT_ID	0x5A
 #define A14_EC_REPORT_SIZE	64
@@ -318,7 +319,8 @@ static DEVICE_ATTR_RW(hid_cmd);
 
 static const struct hid_device_id asus_hid_devices[] = {
 	/* Tested on ASUS Zenbook A14 (UX3407QA) only. */
-	{ HID_DEVICE(0x18, 0x00, ASUS_VENDOR_ID, ASUS_PRODUCT_ID) },
+	{ HID_DEVICE(0x18, 0x00, ASUS_VENDOR_ID, ASUS_PRODUCT_ID_A14) },
+	{ HID_DEVICE(0x18, 0x00, ASUS_VENDOR_ID, ASUS_PRODUCT_ID_S15) },
 	{ } /* Terminating entry */
 };
 MODULE_DEVICE_TABLE(hid, asus_hid_devices);
@@ -384,8 +386,8 @@ static int asus_hid_probe(struct hid_device *hdev, const struct hid_device_id *i
 		return ret;
 	}
 	dev_info(&hdev->dev,
-		 "ASUS EC HID driver for Zenbook A14 loaded for 0x%04x:0x%04x\n",
-		 ASUS_VENDOR_ID, ASUS_PRODUCT_ID);
+		 "ASUS EC HID driver for Zenbook A14 / VivoBook S 15 loaded for 0x%04x:0x%04x\n",
+		 id->vendor, id->product);
 
 	device_create_file(&hdev->dev, &dev_attr_hid_cmd);
 

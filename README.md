@@ -1,19 +1,19 @@
 # asus-zenbook-a14-ec
 
-Out-of-tree Linux kernel drivers for the **ASUS Zenbook A14 (UX3407RA)**,
-a Qualcomm X1E80100-based laptop. Provides fan control, power profiles,
-keyboard backlight, and Fn hotkeys.
+Out-of-tree Linux kernel drivers for the **ASUS Zenbook A14 (UX3407RA)** /
+**ASUS Vivobook S15 (S5507QA_S5507QAD)**, two Qualcomm X1E80100-based laptops.
+Provides fan control, power profiles, keyboard backlight, and Fn hotkeys.
 
 ## Modules
 
 | Module                  | Function                                         |
 |-------------------------|--------------------------------------------------|
-| `asus_zenbook_a14_ec`   | EC hwmon (fan/PWM/temp) + platform_profile       |
+| `i2c_asus_ec`   | EC hwmon (fan/PWM/temp) + platform_profile       |
 | `hid_asus_ec`           | Keyboard backlight LED class + Fn hotkeys        |
 
 ## Status
 
-### EC driver (`asus_zenbook_a14_ec`)
+### EC driver (`i2c_asus_ec`)
 
 - **hwmon**: `fan1_input`, `pwm1`, `pwm1_enable`, `temp1_input`
 - **Manual PWM**: works (no watchdog on A14 — safe indefinitely)
@@ -68,7 +68,7 @@ make KDIR=/path/to/linux   # build against specific tree
 ```sh
 # EC driver (load platform_profile first if not built-in)
 sudo modprobe platform_profile
-sudo insmod ./asus_zenbook_a14_ec.ko
+sudo insmod ./i2c_asus_ec.ko
 
 # HID driver
 sudo insmod ./hid_asus_ec.ko
@@ -95,8 +95,6 @@ make dmesg    # tail driver log
 
 - **A14 has no watchdog timeout** (verified: 3+ min manual mode = no
   reboot). Manual PWM control is safe without temperature babysitting.
-- **Vivobook warning**: If porting to Vivobook S15, re-enable watchdog
-  kthread (hard-resets after ~2 min without temp feed).
 - Companion `tool.py` user-space access on `/dev/i2c-4` is **mutually
   exclusive** with this driver.
 - If anything misbehaves: hard power-cycle and pick working kernel from

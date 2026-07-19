@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * ASUS Zenbook A14 (UX3407RA) Embedded Controller driver — PoC
+ * ASUS Zenbook A14 (UX3407RA) / ASUS Vivobook S 15 S5507QA_S5507QAD
+ * Embedded Controller driver — PoC
  *
  * Step 6: dual-fan support.
  *
@@ -47,6 +48,7 @@
 #include <linux/cpufreq.h>
 #include <linux/delay.h>
 #include <linux/device.h>
+#include <linux/dmi.h>
 #include <linux/hwmon.h>
 #include <linux/i2c.h>
 #include <linux/init.h>
@@ -62,7 +64,7 @@
 #include <linux/sched.h>
 #include <linux/thermal.h>
 
-#define DRV_NAME		"asus_zenbook_a14_ec"
+#define DRV_NAME		"i2c_asus_ec"
 
 #define EC_I2C_BUS_NAME		"b94000.i2c"
 #define EC_I2C_ADDR		0x5b
@@ -855,6 +857,20 @@ static int asus_ec_watchdog_fn(void *data)
 	return 0;
 }
 
+static bool is_vivobook_s15(struct asus_ec *ec)
+{
+	const char *product = dmi_get_system_info(DMI_PRODUCT_NAME);
+	
+	if (!product)
+		return false;
+	
+	if (strstr(product, "ASUS Vivobook S 15 S5507QA_S5507QAD")) {
+		return true;
+	}
+	
+	return false;
+}
+
 /* Caller MUST hold ec->mode_lock */
 static int __maybe_unused asus_ec_start_watchdog(struct asus_ec *ec)
 {
@@ -862,6 +878,9 @@ static int __maybe_unused asus_ec_start_watchdog(struct asus_ec *ec)
 	int ret;
 
 	if (ec->watchdog_task)
+		return 0;
+	
+	if (!is_vivobook_s15(ec))
 		return 0;
 
 	/* Send one temp synchronously so the EC's watchdog starts fresh. */
@@ -882,10 +901,17 @@ static int __maybe_unused asus_ec_start_watchdog(struct asus_ec *ec)
 }
 
 /* Caller MUST hold ec->mode_lock */
-static void asus_ec_stop_watchdog(struct asus_ec *ec)
+static void __maybe_unused asus_ec_stop_watchdog(struct asus_ec *ec)
 {
+	if (!is_vivobook_s15(ec)) {
+		return;
+	}
+
 	if (!ec->watchdog_task)
 		return;
+	
+	dev_warn(ec->dev,
+		"stopping watchdog, expect full-speed fans in 120 seconds\n");
 
 	kthread_stop(ec->watchdog_task);
 	ec->watchdog_task = NULL;
@@ -895,23 +921,7 @@ static void asus_ec_stop_watchdog(struct asus_ec *ec)
 static int asus_ec_enter_manual(struct asus_ec *ec)
 {
 	int ret;
-
-	/*
-	 * A14 has no watchdog timeout (verified 2026-05-07: 3+ min manual
-	 * mode with no temp feed = no reboot). Vivobook needs watchdog;
-	 * A14 doesn't. For now skip watchdog entirely (TODO: add model
-	 * detection and gate per-model).
-	 */
-	/* ret = asus_ec_start_watchdog(ec);
-	if (ret)
-		return ret; */
-
 	ret = asus_ec_set_fan_mode(ec, EC_FAN_MODE_MANUAL);
-	if (ret) {
-		/* asus_ec_stop_watchdog(ec); */
-		return ret;
-	}
-
 	ec->manual_active = true;
 	return 0;
 }
@@ -929,8 +939,6 @@ static int asus_ec_leave_manual(struct asus_ec *ec)
 		return ret;
 	}
 
-	/* A14: no watchdog, nothing to stop. */
-	/* asus_ec_stop_watchdog(ec); */
 	ec->manual_active = false;
 	return 0;
 }
@@ -1233,7 +1241,21 @@ static int asus_ec_probe(struct platform_device *pdev)
 	 * non-existent address causes spurious I2C NAKs and may disturb
 	 * the EC's idle fan behaviour.
 	 */
-	ec->fan_client = NULL;
+	if (is_vivobook_s15(ec)) {
+		struct i2c_board_info fan_info = {
+			I2C_BOARD_INFO("asus-fan-ctrl", FAN_I2C_ADDR),
+		};
+	
+		ec->fan_client = i2c_new_client_device(ec->adapter, &fan_info);
+		if (!ec->fan_client) {
+			dev_warn(ec->dev, "Failed to register fan controller at 0x%02x\n",
+					FAN_I2C_ADDR);
+			i2c_put_adapter(ec->adapter);
+			return PTR_ERR(ec->fan_client);
+		}
+	} else {
+		ec->fan_client = NULL;
+	}
 
 	platform_set_drvdata(pdev, ec);
 
@@ -1317,6 +1339,7 @@ static int asus_ec_probe(struct platform_device *pdev)
 	 * PPD will auto-discover via /sys/class/platform-profile/.
 	 */
 	ec->pp_active = PLATFORM_PROFILE_BALANCED;
+	#ifdef CONFIG_PLATFORM_PROFILE	
 	ec->ppdev = devm_platform_profile_register(dev,
 				"asus-zenbook-a14-ec", ec, &asus_ec_pp_ops);
 	if (IS_ERR(ec->ppdev)) {
@@ -1326,9 +1349,13 @@ static int asus_ec_probe(struct platform_device *pdev)
 	} else {
 		dev_info(dev, "platform_profile registered (quiet/balanced/performance)\n");
 	}
+	#endif
 
 	/* Set up CPU freq QoS for profile-based frequency capping. */
 	asus_ec_freq_qos_init(ec);
+	ret = asus_ec_start_watchdog(ec);
+	if (ret)
+		return 1;
 
 	return 0;
 }
@@ -1344,9 +1371,8 @@ static void asus_ec_remove(struct platform_device *pdev)
 	mutex_lock(&ec->mode_lock);
 	if (ec->manual_active)
 		(void)asus_ec_leave_manual(ec);
-	else
-		asus_ec_stop_watchdog(ec);
 	mutex_unlock(&ec->mode_lock);
+	asus_ec_stop_watchdog(ec);
 
 	/* Restore CPU freq to uncapped before removing. */
 	asus_ec_freq_qos_set(ec, PP_MAX_FREQ_KHZ);
@@ -1368,6 +1394,7 @@ static void asus_ec_remove(struct platform_device *pdev)
 /* PM                                                                 */
 /* ------------------------------------------------------------------ */
 
+// FIXME: adapt to Vivobook S 15
 static int __maybe_unused asus_ec_suspend(struct device *dev)
 {
 	struct asus_ec *ec = dev_get_drvdata(dev);
@@ -1375,19 +1402,23 @@ static int __maybe_unused asus_ec_suspend(struct device *dev)
 
 	mutex_lock(&ec->mode_lock);
 
-	/*
-	 * Force fan off during suspend: switch to manual mode and set
-	 * PWM to 0 on BOTH fans. The EC on A14 has no suspend signaling
-	 * (0x23/0x76 doesn't exist), so it would otherwise keep the fans
-	 * spinning at whatever auto-mode decided pre-suspend.
-	 */
-	ret = asus_ec_set_fan_mode(ec, EC_FAN_MODE_MANUAL);
-	if (ret)
-		dev_warn(dev, "suspend: set manual failed: %d\n", ret);
+	if (is_vivobook_s15(ec))
+		fan_set_suspend(ec, EC_FAN_MODE_AUTO);
+	else {
+		/*
+		 * Force fan off during suspend: switch to manual mode and set
+		 * PWM to 0 on BOTH fans. The EC on A14 has no suspend signaling
+		 * (0x23/0x76 doesn't exist), so it would otherwise keep the fans
+		 * spinning at whatever auto-mode decided pre-suspend.
+		 */
+		ret = asus_ec_set_fan_mode(ec, EC_FAN_MODE_MANUAL);
+		if (ret)
+			dev_warn(dev, "suspend: set manual failed: %d\n", ret);
 
-	ret = asus_ec_set_pwm_both(ec, 0);
-	if (ret)
-		dev_warn(dev, "suspend: set pwm 0 (both fans) failed: %d\n", ret);
+		ret = asus_ec_set_pwm_both(ec, 0);
+		if (ret)
+			dev_warn(dev, "suspend: set pwm 0 (both fans) failed: %d\n", ret);
+	}
 
 	mutex_unlock(&ec->mode_lock);
 
