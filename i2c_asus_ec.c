@@ -808,11 +808,15 @@ static int asus_ec_max_temp_mc(struct asus_ec *ec)
 	}
 
 	if (max < 0) {
-		/* Fallback: EC's own temp register, in °C → m°C. */
+		/*
+		 * Fallback: EC's own temp register, in °C → m°C.
+		 * Reads a constant 0 on S5507QA; reject it, reporting "cold"
+		 * to the fan controller would stop the fans.
+		 */
 		u8 v;
 
 		if (!asus_ec_read_reg(ec, EC_REG_TEMP_MAJ,
-				      EC_REG_TEMP_MIN, &v))
+				      EC_REG_TEMP_MIN, &v) && v)
 			max = (int)v * 1000;
 	}
 
