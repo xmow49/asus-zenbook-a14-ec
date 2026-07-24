@@ -1520,18 +1520,10 @@ static int __maybe_unused asus_ec_resume(struct device *dev)
 
 static SIMPLE_DEV_PM_OPS(asus_ec_pm_ops, asus_ec_suspend, asus_ec_resume);
 
-static const struct of_device_id asus_geni_match[] = {
-    { .compatible = "qcom,geni-i2c" },
-    { }
-};
-
-MODULE_DEVICE_TABLE(of, asus_geni_match);
-
 static struct platform_driver asus_ec_driver = {
 	.driver	= {
 		.name	= DRV_NAME,
 		.pm	= &asus_ec_pm_ops,
-		.of_match_table = asus_geni_match,
 	},
 	.probe	= asus_ec_probe,
 	.remove	= asus_ec_remove,
