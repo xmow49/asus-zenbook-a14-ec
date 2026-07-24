@@ -699,6 +699,9 @@ static int asus_ec_pp_get(struct device *dev,
 	return 0;
 }
 
+static int asus_ec_enter_manual(struct asus_ec *ec);
+static int asus_ec_leave_manual(struct asus_ec *ec);
+
 static int asus_ec_pp_set(struct device *dev,
 			  enum platform_profile_option profile)
 {
@@ -711,10 +714,9 @@ static int asus_ec_pp_set(struct device *dev,
 	case PLATFORM_PROFILE_QUIET:
 		/* Manual mode with low PWM + CPU freq cap. */
 		if (!ec->manual_active) {
-			ret = asus_ec_set_fan_mode(ec, EC_FAN_MODE_MANUAL);
+			ret = asus_ec_enter_manual(ec);
 			if (ret)
 				goto out;
-			ec->manual_active = true;
 		}
 		ret = asus_ec_set_pwm_both(ec, PP_QUIET_PWM);
 		if (ret)
@@ -725,10 +727,9 @@ static int asus_ec_pp_set(struct device *dev,
 	case PLATFORM_PROFILE_BALANCED:
 		/* Auto mode — EC handles the thermal curve. CPU uncapped. */
 		if (ec->manual_active) {
-			ret = asus_ec_set_fan_mode(ec, EC_FAN_MODE_AUTO);
+			ret = asus_ec_leave_manual(ec);
 			if (ret)
 				goto out;
-			ec->manual_active = false;
 		}
 		asus_ec_freq_qos_set(ec, PP_MAX_FREQ_KHZ);
 		break;
@@ -736,10 +737,9 @@ static int asus_ec_pp_set(struct device *dev,
 	case PLATFORM_PROFILE_PERFORMANCE:
 		/* Manual mode with high PWM for sustained cooling. CPU uncapped. */
 		if (!ec->manual_active) {
-			ret = asus_ec_set_fan_mode(ec, EC_FAN_MODE_MANUAL);
+			ret = asus_ec_enter_manual(ec);
 			if (ret)
 				goto out;
-			ec->manual_active = true;
 		}
 		ret = asus_ec_set_pwm_both(ec, PP_PERF_PWM);
 		if (ret)
@@ -1375,7 +1375,7 @@ static int asus_ec_probe(struct platform_device *pdev)
 	 * PPD will auto-discover via /sys/class/platform-profile/.
 	 */
 	ec->pp_active = PLATFORM_PROFILE_BALANCED;
-	#ifdef CONFIG_PLATFORM_PROFILE	
+	#ifdef CONFIG_PLATFORM_PROFILE
 	ec->ppdev = devm_platform_profile_register(dev,
 				"asus-zenbook-a14-ec", ec, &asus_ec_pp_ops);
 	if (IS_ERR(ec->ppdev)) {
