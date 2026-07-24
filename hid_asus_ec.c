@@ -44,6 +44,7 @@ struct asus_hid_data {
 	struct led_classdev kbd_led_cdev;
 	struct input_dev *hotkey_input_dev;
 	enum led_brightness saved_brightness;
+	bool fn_lock_state;
 };
 
 static struct asus_hid_data *asus_data;
@@ -100,6 +101,23 @@ static void asus_kbd_set_brightness(struct led_classdev *led_cdev,
 	data->saved_brightness = (enum led_brightness)level;
 }
 
+static int switch_fn_lock_state(struct hid_device *hdev)
+{
+	struct asus_hid_data *data = hid_get_drvdata(hdev);
+	int ret;
+	u8 buf[A14_EC_REPORT_SIZE] = { A14_EC_REPORT_ID, 0xD0, 0x4E, !data->fn_lock_state };
+
+	ret = asus_send_ec_command(data->hdev, buf);
+
+	if (ret < 0) {
+		dev_warn(&hdev->dev, "Switching Fn lock state failed\n");
+		return ret;
+	}
+
+	data->fn_lock_state = !data->fn_lock_state;
+	return 0;
+}
+
 static int asus_raw_event(struct hid_device *hdev, struct hid_report *report,
 			  u8 *raw_data, int size)
 {
@@ -111,11 +129,7 @@ static int asus_raw_event(struct hid_device *hdev, struct hid_report *report,
 
 		switch (usage_code) {
 		case A14_EC_EVT_KEY_FN_ESC:
-			input_event(input_dev, EV_KEY, KEY_FN_ESC, 1);
-			input_sync(input_dev);
-			input_event(input_dev, EV_KEY, KEY_FN_ESC, 0);
-			input_sync(input_dev);
-			return 1;
+			return !switch_fn_lock_state(hdev);
 
 		/* FN + F1, F2 and F3 are not managed by EC*/
 
@@ -337,6 +351,7 @@ static int asus_hid_probe(struct hid_device *hdev, const struct hid_device_id *i
 	hid_set_drvdata(hdev, data);
 	asus_data = data;
 	data->saved_brightness = A14_EC_MAX_BACKLIGHT;
+	data->fn_lock_state = 1;
 	ret = hid_parse(hdev);
 	if (ret)
 		return ret;
@@ -390,6 +405,9 @@ static int asus_hid_probe(struct hid_device *hdev, const struct hid_device_id *i
 		 id->vendor, id->product);
 
 	device_create_file(&hdev->dev, &dev_attr_hid_cmd);
+	
+	// Personal preference, lock Fn keys by default
+	switch_fn_lock_state(hdev);
 
 	return 0;
 }
