@@ -148,6 +148,8 @@ static const char * const asus_ec_thermal_zones[] = {
 	"gpuss-0-thermal",
 };
 
+static const int n_wanted_zones = ARRAY_SIZE(asus_ec_thermal_zones);
+
 struct asus_ec {
 	struct device		*dev;
 	struct i2c_adapter	*adapter;
@@ -768,7 +770,8 @@ static const struct platform_profile_ops asus_ec_pp_ops = {
 /* Thermal zone bookkeeping + watchdog                                */
 /* ------------------------------------------------------------------ */
 
-static void asus_ec_lookup_thermal_zones(struct asus_ec *ec)
+/* Returns the number of zones attached. */
+static int asus_ec_lookup_thermal_zones(struct asus_ec *ec)
 {
 	int i;
 
@@ -778,18 +781,28 @@ static void asus_ec_lookup_thermal_zones(struct asus_ec *ec)
 
 		tz = thermal_zone_get_zone_by_name(asus_ec_thermal_zones[i]);
 		if (IS_ERR(tz)) {
-			dev_warn(ec->dev, "thermal zone '%s' not found: %ld\n",
-				 asus_ec_thermal_zones[i], PTR_ERR(tz));
+			dev_dbg(ec->dev, "thermal zone '%s' not found: %ld\n",
+				asus_ec_thermal_zones[i], PTR_ERR(tz));
 			continue;
 		}
 		ec->zones[ec->n_zones++] = tz;
-		dev_dbg(ec->dev, "thermal zone '%s' attached\n",
-			asus_ec_thermal_zones[i]);
 	}
 
-	if (ec->n_zones == 0)
-		dev_warn(ec->dev,
-			 "no thermal zones available; manual mode will fall back to EC temp\n");
+	return ec->n_zones;
+}
+
+/*
+ * The zones register late in boot, well after we bind, and not all at once.
+ * Called from the watchdog thread only, so no locking against max_temp_mc().
+ */
+static void asus_ec_refresh_thermal_zones(struct asus_ec *ec)
+{
+	if (ec->n_zones >= n_wanted_zones)
+		return;
+
+	if (asus_ec_lookup_thermal_zones(ec) >= n_wanted_zones)
+		dev_info(ec->dev, "all %d thermal zones attached\n",
+			 n_wanted_zones);
 }
 
 /* Returns max temp in m°C across registered zones, or -1 on total failure. */
@@ -844,9 +857,13 @@ static int asus_ec_watchdog_fn(void *data)
 		 WATCHDOG_PERIOD_MS);
 
 	while (!kthread_should_stop()) {
-		int ret = asus_ec_send_current_temp(ec);
+		int ret;
 
-		if (ret)
+		asus_ec_refresh_thermal_zones(ec);
+
+		/* Silent while the zones are still coming up; that is expected. */
+		ret = asus_ec_send_current_temp(ec);
+		if (ret && ec->n_zones)
 			dev_warn_ratelimited(ec->dev,
 					     "watchdog: temp send failed: %d\n",
 					     ret);
@@ -889,14 +906,16 @@ static int __maybe_unused asus_ec_start_watchdog(struct asus_ec *ec)
 	if (!is_vivobook_s15(ec))
 		return 0;
 
-	/* Send one temp synchronously so the EC's watchdog starts fresh. */
+	/*
+	 * Send one temp synchronously so the EC's watchdog starts fresh.  At
+	 * boot the thermal zones are usually not up yet; start anyway and let
+	 * the thread pick them up.  The EC stays on its own fan curve until
+	 * we have something real to send.
+	 */
 	ret = asus_ec_send_current_temp(ec);
-	if (ret) {
-		dev_err(ec->dev,
-			"watchdog: refusing to start, initial temp send failed: %d\n",
-			ret);
-		return ret;
-	}
+	if (ret)
+		dev_dbg(ec->dev,
+			"watchdog: no temperature source yet (%d)\n", ret);
 
 	t = kthread_run(asus_ec_watchdog_fn, ec, "asus_ec_wdt");
 	if (IS_ERR(t))
@@ -927,6 +946,17 @@ static void __maybe_unused asus_ec_stop_watchdog(struct asus_ec *ec)
 static int asus_ec_enter_manual(struct asus_ec *ec)
 {
 	int ret;
+
+	/*
+	 * In manual mode the EC hard-resets the machine if the temperature
+	 * feed stops for ~2 min, so refuse while we have nothing to feed it.
+	 */
+	if (!ec->n_zones) {
+		dev_warn(ec->dev,
+			 "refusing manual mode: no thermal zone attached\n");
+		return -EAGAIN;
+	}
+
 	ret = asus_ec_set_fan_mode(ec, EC_FAN_MODE_MANUAL);
 	ec->manual_active = true;
 	return 0;
