@@ -925,19 +925,30 @@ static int __maybe_unused asus_ec_start_watchdog(struct asus_ec *ec)
 	return 0;
 }
 
-/* Caller MUST hold ec->mode_lock */
-static void __maybe_unused asus_ec_stop_watchdog(struct asus_ec *ec)
+/*
+ * Caller MUST hold ec->mode_lock.
+ *
+ * @warn: shout about the EC's 120 s timeout.  Set it when the EC is left
+ *	  running its own curve with no temperature source (remove()), clear it
+ *	  when the EC has been told the AP is going to sleep (suspend()) — there
+ *	  the timeout does not apply and the message is pure noise.
+ */
+static void __maybe_unused asus_ec_stop_watchdog(struct asus_ec *ec, bool warn)
 {
-	if (!is_vivobook_s15(ec)) {
+	if (!is_vivobook_s15(ec))
 		return;
-	}
 
 	if (!ec->watchdog_task)
 		return;
-	
-	dev_warn(ec->dev,
-		"stopping watchdog, expect full-speed fans in 120 seconds\n");
 
+	if (warn)
+		dev_warn(ec->dev,
+			"stopping watchdog, expect full-speed fans in 120 seconds\n");
+
+	/*
+	 * Safe under mode_lock: the watchdog thread only ever takes ec->lock,
+	 * and the lock order in this driver is always mode_lock -> ec->lock.
+	 */
 	kthread_stop(ec->watchdog_task);
 	ec->watchdog_task = NULL;
 }
@@ -1407,8 +1418,8 @@ static void asus_ec_remove(struct platform_device *pdev)
 	mutex_lock(&ec->mode_lock);
 	if (ec->manual_active)
 		(void)asus_ec_leave_manual(ec);
+	asus_ec_stop_watchdog(ec, true);
 	mutex_unlock(&ec->mode_lock);
-	asus_ec_stop_watchdog(ec);
 
 	/* Restore CPU freq to uncapped before removing. */
 	asus_ec_freq_qos_set(ec, PP_MAX_FREQ_KHZ);
@@ -1437,9 +1448,29 @@ static int __maybe_unused asus_ec_suspend(struct device *dev)
 
 	mutex_lock(&ec->mode_lock);
 
-	if (is_vivobook_s15(ec))
-		fan_set_suspend(ec, EC_FAN_MODE_SUSPEND);
-	else {
+	if (is_vivobook_s15(ec)) {
+		/*
+		 * Tell the EC the AP is going to sleep.  It parks the fans and
+		 * stops expecting the temperature stream, so the 120 s manual
+		 * mode timeout does not fire while we are down.
+		 */
+		ret = fan_set_suspend(ec, EC_FAN_MODE_SUSPEND);
+		if (ret)
+			dev_warn(dev, "suspend: EC sleep signalling failed: %d\n",
+				 ret);
+
+		/*
+		 * Only then stop our watchdog thread.  It is a plain kthread
+		 * driven by a non-deferrable 2 s timer and it does not
+		 * participate in the freezer, so left running across suspend it
+		 *   - hits the I2C controller after the adapter has suspended,
+		 *     which trips a WARNING in __i2c_transfer() and fails with
+		 *     -ESHUTDOWN, and
+		 *   - in s2idle, drags the SoC out of its low-power state 1800
+		 *     times an hour, destroying any residency.
+		 */
+		asus_ec_stop_watchdog(ec, false);
+	} else {
 		/*
 		 * Force fan off during suspend: switch to manual mode and set
 		 * PWM to 0 on BOTH fans. The EC on A14 has no suspend signaling
@@ -1512,6 +1543,11 @@ static int __maybe_unused asus_ec_resume(struct device *dev)
 		ec->manual_active = false;
 		break;
 	}
+
+	/* Fans are back under a known mode: resume feeding the EC. */
+	ret = asus_ec_start_watchdog(ec);
+	if (ret)
+		dev_warn(dev, "resume: restarting watchdog failed: %d\n", ret);
 
 	mutex_unlock(&ec->mode_lock);
 
